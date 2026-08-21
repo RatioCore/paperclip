@@ -345,20 +345,20 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
       checks.push({
         code: "claude_managed_config_dir",
         level: "info",
-        message: "Sandbox probe is using Paperclip-managed Claude config materialization.",
+        message: "The environment probe is using Paperclip-managed Claude config materialization.",
         detail: remoteClaudeConfigDir,
       });
     } catch (err) {
       // Keep the raw error out of the Test-result check. Send the redacted
       // diagnostic to the server log instead.
       logRedactedSandboxProbeDiagnostic(
-        "Could not materialize Paperclip-managed Claude config for the sandbox probe",
+        "Could not materialize Paperclip-managed Claude config for the environment probe",
         err instanceof Error ? err.message : String(err),
       );
       checks.push({
         code: "claude_managed_config_dir_failed",
         level: "error",
-        message: "Could not materialize Paperclip-managed Claude config for the sandbox probe.",
+        message: "Could not materialize Paperclip-managed Claude config for the environment probe.",
         hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
       });
     } finally {

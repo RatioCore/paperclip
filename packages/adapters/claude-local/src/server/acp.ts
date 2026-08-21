@@ -530,7 +530,7 @@ function buildAcpLoginProbeUnavailableCheck(message: string): AdapterEnvironment
     code: "claude_acp_login_probe_unavailable",
     level: "warn",
     message,
-    hint: "Verify that the sandbox can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane.",
+    hint: "Verify that the environment can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane.",
   };
 }
 
