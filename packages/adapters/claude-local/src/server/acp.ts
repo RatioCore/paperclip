@@ -511,8 +511,8 @@ function buildAcpSandboxAuthMissingChecks(loginUrl: string | null): AdapterEnvir
     {
       code: ADAPTER_AUTH_MISSING_CHECK_CODE,
       level: "warn",
-      message: "The sandbox has no ready authentication for this adapter.",
-      hint: "Provide credentials for this adapter, or start login in the sandbox.",
+      message: "This environment has no ready authentication for this adapter.",
+      hint: "Provide credentials for this adapter, or start login in the environment.",
     },
   ];
 }

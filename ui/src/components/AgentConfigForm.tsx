@@ -33,6 +33,7 @@ import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, 
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
+import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -649,9 +650,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
-    ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
+    ? environmentDisplayLabel(instanceDefaultEnvironment)
     : managedSandboxOnly
-      ? "Managed sandbox"
+      ? "Paperclip Computer"
       : "Local";
 
   // Fetch adapter models for the effective adapter type
@@ -1418,7 +1419,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   <option value="">Default: {inheritedEnvironmentLabel}</option>
                   {environmentOptions.map((environment) => (
                     <option key={environment.id} value={environment.id}>
-                      {environment.name} · {environment.driver}
+                      {environmentDisplayLabel(environment)}
                     </option>
                   ))}
                 </select>
