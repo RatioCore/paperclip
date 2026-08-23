@@ -30,6 +30,10 @@ export function attentionRoutes(db: Db) {
     const activitySince = optionalQueryString(req.query.activitySince, "activitySince");
     const activityUntil = optionalQueryString(req.query.activityUntil, "activityUntil");
     const queue = optionalQueryString(req.query.queue, "queue");
+    const scope = optionalQueryString(req.query.scope, "scope");
+    if (scope !== undefined && scope !== "board" && scope !== "all") {
+      throw badRequest("scope must be 'board' or 'all'");
+    }
     const cursor = optionalQueryString(req.query.cursor, "cursor");
     const sortValue = optionalQueryString(req.query.sort, "sort");
     if (sortValue !== undefined && sortValue !== "activity" && sortValue !== "decide") {
@@ -47,6 +51,7 @@ export function attentionRoutes(db: Db) {
       activitySince,
       activityUntil,
       queue,
+      scope: scope as "board" | "all" | undefined,
       cursor,
       sort: sortValue as AttentionSortMode | undefined,
       limit,

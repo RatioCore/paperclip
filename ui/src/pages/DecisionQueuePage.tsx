@@ -103,7 +103,7 @@ export function DecisionQueuePage() {
       activityBounds.activitySince ?? null,
       activityBounds.activityUntil ?? null,
     ],
-    queryFn: () => attentionApi.list(selectedCompanyId!, { queue: queueKey, all: true, ...activityBounds }),
+    queryFn: () => attentionApi.list(selectedCompanyId!, { queue: queueKey, all: true, scope: "all", ...activityBounds }),
     enabled: !!selectedCompanyId && !!queueKey,
     refetchOnWindowFocus: true,
   });
