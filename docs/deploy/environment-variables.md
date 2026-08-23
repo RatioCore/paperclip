@@ -19,6 +19,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_PRODUCTIVITY_REVIEW_ISSUE_GENERATION_ENABLED` | `false` | Set to `true` to allow the productivity reconciler to create or refresh review issues and apply its continuation hold. When unset, source issue/run evidence remains available but no productivity-review work is created. |
 
 ## Secrets
 

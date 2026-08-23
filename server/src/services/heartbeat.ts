@@ -6512,6 +6512,7 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  productivityReviewIssueGenerationEnabled?: boolean;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -9065,6 +9066,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         companyId: issue.companyId,
         issueId: issue.id,
         agentId: run.agentId,
+        issueGenerationEnabled: options.productivityReviewIssueGenerationEnabled,
       });
       if (productivityHold.held) {
         await setRunStatus(run.id, run.status, {
@@ -13335,7 +13337,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
-    return productivityReviews.reconcileProductivityReviews({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return productivityReviews.reconcileProductivityReviews({
+      ...opts,
+      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
+      issueGenerationEnabled: options.productivityReviewIssueGenerationEnabled,
+    });
   }
 
   async function reconcileTaskWatchdogs(opts?: { companyId?: string | null; runId?: string | null }) {

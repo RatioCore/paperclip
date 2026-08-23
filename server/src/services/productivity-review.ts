@@ -843,7 +843,23 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     companyId?: string;
     thresholds?: Partial<ProductivityReviewThresholds>;
     issueCreatedAtGte?: Date | null;
+    issueGenerationEnabled?: boolean;
   }) {
+    if (opts?.issueGenerationEnabled === false) {
+      return {
+        scanned: 0,
+        created: 0,
+        updated: 0,
+        existing: 0,
+        snoozed: 0,
+        creationCapped: 0,
+        noActionSuppressed: 0,
+        skipped: 0,
+        failed: 0,
+        reviewIssueIds: [] as string[],
+        failedIssueIds: [] as string[],
+      };
+    }
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
     const candidates = await db
@@ -938,7 +954,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     agentId: string;
     now?: Date;
     thresholds?: Partial<ProductivityReviewThresholds>;
+    issueGenerationEnabled?: boolean;
   }) {
+    if (input.issueGenerationEnabled === false) return { held: false as const };
     const now = input.now ?? new Date();
     const thresholds = buildThresholds(input.thresholds);
     const [sourceIssue, sourceAgent, openReview] = await Promise.all([
