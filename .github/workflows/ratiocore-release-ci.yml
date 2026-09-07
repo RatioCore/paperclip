@@ -68,9 +68,11 @@ jobs:
           server/src/__tests__/openclaw-credential-persistence.test.ts
           server/src/__tests__/openclaw-credential-response.test.ts
           server/src/__tests__/openclaw-gateway-adapter.test.ts
+          server/src/__tests__/openapi-routes.test.ts
           server/src/__tests__/redact-sensitive.test.ts
           server/src/__tests__/redaction.test.ts
           server/src/__tests__/secrets-service.test.ts
+          server/src/__tests__/workspace-runtime.test.ts
           ui/src/lib/agent-onboarding-prompt.test.ts
 
       - name: Build workspaces

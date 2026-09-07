@@ -5636,6 +5636,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // Nested teardown must drain child-exit persistence while its foreign-key
+    // parents still exist; the file-level reset happens later.
+    await resetRuntimeServicesForTests();
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -6290,6 +6293,94 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(persisted?.healthStatus).toBe("unknown");
     expect(persisted?.stoppedAt).toBeTruthy();
   });
+
+  it("drains child-exit persistence before reset permits fixture parent deletion", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-exit-drain-"));
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Codex Coder", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Runtime exit drain test", status: "active" });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId, companyId, projectId, mode: "isolated_workspace", strategyType: "git_worktree",
+      name: "Execution workspace exit drain test", status: "active", cwd: workspaceRoot,
+      providerType: "local_fs", providerRef: workspaceRoot,
+    });
+    let releasePersistence!: () => void;
+    let enteredPersistence!: () => void;
+    const persistenceGate = new Promise<void>((resolve) => { releasePersistence = resolve; });
+    const persistenceStarted = new Promise<void>((resolve) => { enteredPersistence = resolve; });
+    let persisted = false;
+    const gatedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "insert") return Reflect.get(target, property, receiver);
+        return (table: typeof workspaceRuntimeServices) => ({
+          values(values: typeof workspaceRuntimeServices.$inferInsert) {
+            const query = target.insert(table).values(values);
+            return { async onConflictDoUpdate(options: Parameters<typeof query.onConflictDoUpdate>[0]) {
+              if (table === workspaceRuntimeServices && values.status === "stopped") {
+                enteredPersistence();
+                await persistenceGate;
+                const result = await query.onConflictDoUpdate(options);
+                persisted = true;
+                return result;
+              }
+              return await query.onConflictDoUpdate(options);
+            } };
+          },
+        });
+      },
+    });
+    const script = [
+      "const http=require('node:http');",
+      "const server=http.createServer((req,res)=>{res.end('ok');if(req.url==='/exit')server.close(()=>process.exit(0));});",
+      "server.listen(Number(process.env.PORT),'127.0.0.1');",
+    ].join("");
+    let reset: Promise<void> | undefined;
+    try {
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db: gatedDb,
+        actor: { id: agentId, name: "Codex Coder", companyId },
+        issue: null,
+        workspace: { ...buildWorkspace(workspaceRoot), projectId, workspaceId: null },
+        executionWorkspaceId,
+        config: { workspaceRuntime: { services: [{
+          name: "web", command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+          port: { type: "auto" },
+          readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 25 },
+          lifecycle: "shared", reuseScope: "execution_workspace", stopPolicy: { type: "manual" },
+        }] } },
+        adapterEnv: {},
+      }))[0]!;
+      await (await fetch(`http://127.0.0.1:${started.port}/exit`, { headers: { Connection: "close" } })).text();
+      await persistenceStarted;
+      let resetCompleted = false;
+      reset = resetRuntimeServicesForTests().then(() => { resetCompleted = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(resetCompleted).toBe(false);
+      expect(persisted).toBe(false);
+      releasePersistence();
+      await reset;
+      expect(persisted).toBe(true);
+      const [row] = await db.select().from(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.id, started.id));
+      expect(row?.status).toBe("stopped");
+      await db.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.id, started.id));
+      await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, executionWorkspaceId));
+    } finally {
+      releasePersistence();
+      await reset;
+      await resetRuntimeServicesForTests();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("restarts a stopped auto-port service on the same port when rendered env changes", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-port-reuse-env-"));
