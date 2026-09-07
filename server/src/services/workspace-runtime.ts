@@ -241,6 +241,7 @@ type StoppedRuntimeServiceReuseCandidate = {
 };
 
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
+const pendingRuntimeServiceExitCleanups = new Set<Promise<void>>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
@@ -500,6 +501,12 @@ export async function resetRuntimeServicesForTests(
     for (const serviceId of [...runtimeServicesById.keys()]) {
       await stopRuntimeService(serviceId).catch(() => undefined);
     }
+  }
+  // Exit listeners remove their service from the registry before asynchronous
+  // cleanup/persistence finishes. Drain those tasks before fixtures can delete
+  // their FK parents or replace the exposure dependencies. Failures propagate.
+  while (pendingRuntimeServiceExitCleanups.size > 0) {
+    await Promise.all([...pendingRuntimeServiceExitCleanups]);
   }
   for (const record of runtimeServicesById.values()) {
     clearIdleTimer(record);
@@ -6637,11 +6644,12 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
     if (current.reuseKey && runtimeServicesByReuseKey.get(current.reuseKey) === current.id) {
       runtimeServicesByReuseKey.delete(current.reuseKey);
     }
-    void (async () => {
+    const cleanup = (async () => {
       await cleanupRecordExposure(current);
       await removeLocalServiceRegistryRecord(current.serviceKey);
       await persistRuntimeServiceRecord(db, current);
-    })();
+    })().finally(() => pendingRuntimeServiceExitCleanups.delete(cleanup));
+    pendingRuntimeServiceExitCleanups.add(cleanup);
   });
 }
 
