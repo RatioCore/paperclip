@@ -303,7 +303,11 @@ export function approvalService(db: Db, transaction?: ApprovalTransaction) {
         throw unprocessable("Only revision requested approvals can be resubmitted");
       }
 
-      const gateway = existing.type === "hire_agent" && (payload?.adapterType ?? existing.payload.adapterType) === "openclaw_gateway";
+      const adapterType = payload?.adapterType ?? existing.payload.adapterType;
+      const linkedAgentId = payload?.agentId ?? existing.payload.agentId;
+      const linkedAgent = existing.type === "hire_agent" && adapterType === undefined && typeof linkedAgentId === "string"
+        ? await agentsSvc.getById(linkedAgentId) : null;
+      const gateway = existing.type === "hire_agent" && (adapterType ?? linkedAgent?.adapterType) === "openclaw_gateway";
       const persist = async (scopedDb: Db) => {
         const normalizedPayload = gateway ? await secretService(scopedDb).normalizeHireApprovalPayloadForPersistence(existing.companyId, payload ?? existing.payload, {
           adapterType: "openclaw_gateway", actor: actor ?? { userId: existing.requestedByUserId, agentId: existing.requestedByAgentId },

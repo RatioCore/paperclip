@@ -1,3 +1,5 @@
+import { companyPortabilityService } from "../services/company-portability.js";
+import * as instructionsModule from "../services/agent-instructions.js";
 import express from "express";
 import request from "supertest";
 import * as liveEvents from "../services/live-events.js";
@@ -16,7 +18,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
 import { secretService } from "../services/secrets.js";
-import { REDACTED_EVENT_VALUE } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactOpenClawAgentResponse } from "../redaction.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
@@ -121,11 +123,10 @@ describeDb("OpenClaw credential persistence invariant", () => {
     expect(secrets.every((secret) => secret.createdByUserId === "fixture-owner")).toBe(true);
   });
 
-  it.each(["explicit config", "config omitted", "adapter type change"])("generic update scrubs current and every historical snapshot: %s", async (mode) => {
+  it.each(["explicit config", "config omitted"])("generic update scrubs current and every historical snapshot: %s", async (mode) => {
     const row = await legacyAgent();
     await history(row);
-    const patch = mode === "explicit config" ? { adapterConfig: config() }
-      : mode === "adapter type change" ? { adapterType: "process" } : { title: "updated" };
+    const patch = mode === "explicit config" ? { adapterConfig: config() } : { title: "updated" };
     await agentService(db).update(row.id, patch, { recordRevision: { createdByUserId: "fixture-owner" } });
     const result = await assertAllSafe(row.id);
     expect(result.revisions.length).toBe(4);
@@ -418,6 +419,96 @@ describeDb("OpenClaw credential persistence invariant", () => {
     expect(((resubmitted.payload.adapterConfig as any).password as any).type).toBe("secret_ref");
     const managed = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
     expect(managed.some((secret) => secret.createdByUserId === "fixture-editor")).toBe(true);
+  });
+
+  it.each(["incoming", "stored"])("legacy type-omitted approval resubmit infers gateway and rolls back failed normalization writes: %s", async (source) => {
+    const row = await legacyAgent("pending_approval");
+    const value = randomUUID();
+    const [approval] = await db.insert(approvals).values({ companyId: row.companyId, type: "hire_agent", status: "revision_requested",
+      requestedByUserId: "fixture-requester", payload: { agentId: row.id, adapterConfig: { authToken: value } },
+    }).returning();
+    const payload = source === "incoming" ? { agentId: row.id, adapterConfig: { authToken: value } } : undefined;
+    const baseline = await state(row.companyId);
+    await db.execute(sql`CREATE FUNCTION fixture_reject_resubmit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture resubmit rejected'; END $$`);
+    await db.execute(sql`CREATE TRIGGER fixture_reject_resubmit BEFORE UPDATE ON approvals FOR EACH ROW EXECUTE FUNCTION fixture_reject_resubmit()`);
+    try {
+      await expect(approvalService(db).resubmit(approval!.id, payload, { userId: "fixture-editor" })).rejects.toThrow("OpenClaw approval persistence failed");
+      expect(JSON.stringify(await state(row.companyId)) === JSON.stringify(baseline)).toBe(true);
+      expect(JSON.stringify(await approvalService(db).getById(approval!.id)) === JSON.stringify(approval)).toBe(true);
+    } finally {
+      await db.execute(sql`DROP TRIGGER fixture_reject_resubmit ON approvals`);
+      await db.execute(sql`DROP FUNCTION fixture_reject_resubmit()`);
+    }
+    const result = await approvalService(db).resubmit(approval!.id, payload, { userId: "fixture-editor" });
+    expect(result.payload.adapterType).toBe("openclaw_gateway");
+    expect(((result.payload.adapterConfig as any).authToken as any).type).toBe("secret_ref");
+    expect(JSON.stringify(result.payload).includes(value)).toBe(false);
+    const managed = await db.select().from(companySecrets).where(eq(companySecrets.companyId, row.companyId));
+    expect(managed).toHaveLength(1);
+    expect(managed[0]!.createdByUserId).toBe("fixture-editor");
+  });
+
+  it("type-only gateway transition keeps credentials in secure history, never the new response or exported files", async () => {
+    const values = [randomUUID(), randomUUID(), randomUUID()];
+    const row = await legacyAgent("idle", { ...config(), authToken: values[0], password: values[1], devicePrivateKeyPem: values[2] });
+    const [priorRevision] = await db.insert(agentConfigRevisions).values({ companyId: row.companyId, agentId: row.id, changedKeys: ["adapterConfig"], beforeConfig: { ...row }, afterConfig: { ...row } }).returning();
+    const switched = await agentService(db).update(row.id, { adapterType: "process" }, { recordRevision: { source: "fixture_transition", createdByUserId: "fixture-editor" } });
+    expect(switched!.adapterType).toBe("process");
+    for (const key of ["authToken", "password", "devicePrivateKeyPem"]) expect(Object.prototype.hasOwnProperty.call(switched!.adapterConfig, key)).toBe(false);
+    expect(switched!.adapterConfig.sibling).toEqual({ nested: true });
+    const managed = await db.select().from(companySecrets).where(eq(companySecrets.companyId, row.companyId));
+    expect(managed.length).toBeGreaterThanOrEqual(3);
+    const revisions = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, row.id));
+    const receipt = JSON.stringify(redactOpenClawAgentResponse({ agent: switched, revisions }));
+    expect(managed.some((secret) => receipt.includes(secret.id))).toBe(false);
+    expect(values.some((value) => receipt.includes(value))).toBe(false);
+    const instructions = vi.spyOn(instructionsModule, "agentInstructionsService").mockReturnValue({ exportFiles: async () => ({ files: { "AGENTS.md": "Fixture instructions" }, entryFile: "AGENTS.md", warnings: [] }) } as any);
+    try {
+      const exported = await companyPortabilityService(db).exportBundle(row.companyId, { include: { company: false, agents: true, projects: false, issues: false } });
+      const artifact = JSON.stringify(exported);
+      expect(managed.some((secret) => artifact.includes(secret.id))).toBe(false);
+      expect(values.some((value) => artifact.includes(value))).toBe(false);
+    } finally { instructions.mockRestore(); }
+    await agentService(db).rollbackConfigRevision(row.id, priorRevision!.id, { userId: "fixture-editor" });
+    const restored = (await agentService(db).getById(row.id))!;
+    expect(restored.adapterType).toBe("openclaw_gateway");
+    const resolved = await secretService(db).resolveAdapterConfigForRuntime(row.companyId, restored.adapterConfig, { consumerType: "agent", consumerId: row.id }, { adapterType: "openclaw_gateway" });
+    expect(resolved.config.authToken === values[0] && resolved.config.password === values[1] && resolved.config.devicePrivateKeyPem === values[2]).toBe(true);
+  });
+
+  it("does not remove distinct explicit credentials belonging to a replacement non-gateway adapter", async () => {
+    const row = await legacyAgent();
+    const value = randomUUID();
+    const switched = await agentService(db).update(row.id, { adapterType: "process", adapterConfig: { password: value, sibling: "replacement" } });
+    expect(switched!.adapterConfig.password === value).toBe(true);
+    expect(switched!.adapterConfig.sibling).toBe("replacement");
+  });
+
+  it("type-only gateway approval activation uses the same atomic scrub and safe transition history", async () => {
+    const value = randomUUID();
+    const row = await legacyAgent("pending_approval", { ...config(), authToken: value });
+    const baseline = await state(row.companyId);
+    await db.execute(sql`CREATE FUNCTION fixture_reject_activation_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture activation revision rejected'; END $$`);
+    await db.execute(sql`CREATE TRIGGER fixture_reject_activation_revision BEFORE INSERT ON agent_config_revisions FOR EACH ROW EXECUTE FUNCTION fixture_reject_activation_revision()`);
+    try {
+      await expect(agentService(db).activatePendingApproval(row.id, { adapterType: "process" }, { userId: "fixture-editor" })).rejects.toThrow("OpenClaw credential persistence failed");
+      expect(JSON.stringify(await state(row.companyId)) === JSON.stringify(baseline)).toBe(true);
+    } finally {
+      await db.execute(sql`DROP TRIGGER fixture_reject_activation_revision ON agent_config_revisions`);
+      await db.execute(sql`DROP FUNCTION fixture_reject_activation_revision()`);
+    }
+    const activated = await agentService(db).activatePendingApproval(row.id, { adapterType: "process" }, { userId: "fixture-editor" });
+    expect(activated.agent.adapterType).toBe("process");
+    expect(activated.agent.status).toBe("idle");
+    expect(activated.agent.adapterConfig.authToken).toBeUndefined();
+    const revisions = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, row.id));
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.beforeConfig.adapterType).toBe("openclaw_gateway");
+    expect(((revisions[0]!.beforeConfig.adapterConfig as any).authToken as any).type).toBe("secret_ref");
+    const managed = await db.select().from(companySecrets).where(eq(companySecrets.companyId, row.companyId));
+    expect(managed).toHaveLength(1);
+    const receipt = JSON.stringify(redactOpenClawAgentResponse({ agent: activated.agent, revisions }));
+    expect(receipt.includes(value) || receipt.includes(managed[0]!.id)).toBe(false);
   });
 
 });

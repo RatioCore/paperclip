@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import { eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -59,7 +59,11 @@ export function approvalRoutes(
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function assertGatewayCredentialApproval(req: Request, companyId: string, payload: Record<string, unknown>, activation = false) {
-    const mayActivateGateway = activation && (payload.adapterType === "openclaw_gateway"
+    const linkedAgent = activation && typeof payload.agentId === "string"
+      ? await db.select({ adapterType: agents.adapterType }).from(agents)
+        .where(and(eq(agents.id, payload.agentId), eq(agents.companyId, companyId))).then((rows) => rows[0] ?? null)
+      : null;
+    const mayActivateGateway = activation && (payload.adapterType === "openclaw_gateway" || linkedAgent?.adapterType === "openclaw_gateway"
       || (payload.adapterType === undefined && typeof payload.agentId === "string"));
     const credentialAdapterType = payload.adapterType ?? (typeof payload.agentId === "string" ? "openclaw_gateway" : undefined);
     if (!mayActivateGateway && !hasOpenClawCredentialInput(credentialAdapterType, payload.adapterConfig)
@@ -498,8 +502,11 @@ export function approvalRoutes(
     if (existing.type === "hire_agent") {
       await assertGatewayCredentialApproval(req, existing.companyId, { ...existing.payload, ...req.body.payload });
     }
+    const effectiveAdapterType = req.body.payload?.adapterType ?? existing.payload.adapterType;
+    const mayResubmitGateway = existing.type === "hire_agent" && (effectiveAdapterType === "openclaw_gateway"
+      || (effectiveAdapterType === undefined && typeof (req.body.payload?.agentId ?? existing.payload.agentId) === "string"));
     const normalizedPayload = req.body.payload
-      ? existing.type === "hire_agent" && (req.body.payload.adapterType ?? existing.payload.adapterType) !== "openclaw_gateway"
+      ? existing.type === "hire_agent" && !mayResubmitGateway
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
             req.body.payload,
@@ -511,7 +518,7 @@ export function approvalRoutes(
           )
         : req.body.payload
       : undefined;
-    const approval = await svc.resubmit(id, normalizedPayload, ...((req.body.payload?.adapterType ?? existing.payload.adapterType) === "openclaw_gateway" ? [{ userId: req.actor.userId, agentId: req.actor.agentId }] as const : []));
+    const approval = await svc.resubmit(id, normalizedPayload, ...(mayResubmitGateway ? [{ userId: req.actor.userId, agentId: req.actor.agentId }] as const : []));
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,

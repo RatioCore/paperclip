@@ -665,6 +665,7 @@ export function agentService(db: Db, outerPublications?: ActivityPublication[]) 
     options?: UpdateAgentOptions,
     publications?: ActivityPublication[],
     context?: { gateway: boolean },
+    approvalActivation = false,
   ) {
     const existing = await txDb.select().from(agents).where(eq(agents.id, id)).for("update")
       .then((rows) => rows[0] ?? null);
@@ -683,6 +684,7 @@ export function agentService(db: Db, outerPublications?: ActivityPublication[]) 
     }
     if (
       existing.status === "pending_approval" &&
+      !approvalActivation &&
       data.status &&
       data.status !== "pending_approval" &&
       data.status !== "terminated"
@@ -750,7 +752,13 @@ export function agentService(db: Db, outerPublications?: ActivityPublication[]) 
       normalizedPatch.adapterConfig = preservePlaceholder(normalizedPatch.adapterConfig, safeExisting.adapterConfig) as Record<string, unknown>;
     }
     if ((adapterType === "openclaw_gateway" || existing.adapterType === "openclaw_gateway") && !Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
-      normalizedPatch.adapterConfig = safeExisting.adapterConfig;
+      normalizedPatch.adapterConfig = { ...safeExisting.adapterConfig };
+      if (existing.adapterType === "openclaw_gateway" && adapterType !== "openclaw_gateway") {
+        // Gateway-only bindings must not become public non-gateway config on a
+        // type-only switch. Retain managed secrets and the secure before snapshot
+        // for rollback; unrelated adapter-agnostic fields stay intact.
+        for (const key of ["authToken", "token", "password", "devicePrivateKeyPem"]) delete normalizedPatch.adapterConfig[key];
+      }
     }
     if (data.permissions !== undefined) {
       const role = (data.role ?? existing.role) as string;
@@ -1123,6 +1131,12 @@ export function agentService(db: Db, outerPublications?: ActivityPublication[]) 
         context.gateway = existing.adapterType === "openclaw_gateway" || approvedPayload?.adapterType === "openclaw_gateway";
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        if (context.gateway) {
+          return updateAgentInTransaction(txDb, id, { ...patch, status: "idle" }, {
+            allowPendingApprovalConfigUpdate: true,
+            recordRevision: { source: "approval_activation", createdByUserId: actor?.userId, createdByAgentId: actor?.agentId },
+          }, publications, context, true);
+        }
         if (existing.adapterType === "openclaw_gateway" || patch.adapterType === "openclaw_gateway") {
           patch.adapterConfig ??= existing.adapterConfig;
         }
