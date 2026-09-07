@@ -1,3 +1,5 @@
+import { redactOpenClawAgentResponse } from "../redaction.js";
+import { hasOpenClawCredentialInput, hasOpenClawRuntimeCredentialInput } from "./openclaw-credentials.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
@@ -722,6 +724,8 @@ type ImportPlanInternal = {
 type ImportMode = "board_full" | "agent_safe";
 
 type ImportBehaviorOptions = {
+  actorAgentId?: string | null;
+  authorizeGatewayCredentials?: () => Promise<void>;
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
@@ -2203,6 +2207,27 @@ function ensureMarkdownPath(pathValue: string) {
   return normalized;
 }
 
+/** Public previews must also redact serialized configuration files, not only their manifest. */
+function redactGatewayPortableFiles(files: Record<string, CompanyPortabilityFileEntry>) {
+  const projected = { ...files };
+  for (const filePath of Object.keys(projected)) {
+    if (!/(^|\/)\.paperclip\.ya?ml$/.test(filePath)) continue;
+    const content = readPortableTextFile(files, filePath);
+    if (content === null) continue;
+    const extension = parseYamlFile(content);
+    if (!isPlainRecord(extension.agents)) continue;
+    let changed = false;
+    for (const [slug, entry] of Object.entries(extension.agents)) {
+      if (!isPlainRecord(entry) || !isPlainRecord(entry.adapter) || entry.adapter.type !== "openclaw_gateway") continue;
+      const safe = redactOpenClawAgentResponse({ adapterType: "openclaw_gateway", adapterConfig: entry.adapter.config ?? {}, runtimeConfig: entry.runtime ?? {} }) as Record<string, unknown>;
+      extension.agents[slug] = { ...entry, adapter: { ...entry.adapter, config: safe.adapterConfig }, runtime: safe.runtimeConfig };
+      changed = true;
+    }
+    if (changed) projected[filePath] = buildYamlFile(extension);
+  }
+  return projected;
+}
+
 function normalizePortableConfig(
   value: unknown,
 ): Record<string, unknown> {
@@ -3582,11 +3607,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     delete nextAdapterConfig.instructionsBundleMode;
     delete nextAdapterConfig.instructionsRootPath;
     delete nextAdapterConfig.instructionsEntryFile;
-    const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
-      companyId,
-      nextAdapterConfig,
-      { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
-    );
+    const normalizedAdapterConfig = effectiveAdapterType === "openclaw_gateway" ? nextAdapterConfig
+      : await secrets.normalizeAdapterConfigForPersistence(
+        companyId,
+        nextAdapterConfig,
+        { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
+      );
     await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
     return {
       adapterType: effectiveAdapterType,
@@ -4178,15 +4204,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         );
         envInputs.push(...exportedEnvInputs);
         const adapterDefaultRules = ADAPTER_DEFAULT_RULES_BY_TYPE[agent.adapterType] ?? [];
+        const publicConfig = redactOpenClawAgentResponse({ adapterType: agent.adapterType, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig }) as {
+          adapterConfig: Record<string, unknown>; runtimeConfig: Record<string, unknown>;
+        };
+        if (hasOpenClawCredentialInput(agent.adapterType, agent.adapterConfig) || hasOpenClawRuntimeCredentialInput(agent.adapterType, agent.runtimeConfig)) {
+          warnings.push("Gateway credentials are redacted in this package; provide authorized adapter overrides to rebind credentials when importing.");
+        }
         const portableAdapterConfig = pruneDefaultLikeValue(
-          normalizePortableConfig(agent.adapterConfig),
+          normalizePortableConfig(publicConfig.adapterConfig),
           {
             dropFalseBooleans: true,
             defaultRules: adapterDefaultRules,
           },
         ) as Record<string, unknown>;
         const portableRuntimeConfig = pruneDefaultLikeValue(
-          normalizePortableConfig(agent.runtimeConfig),
+          normalizePortableConfig(publicConfig.runtimeConfig),
           {
             dropFalseBooleans: true,
             defaultRules: RUNTIME_DEFAULT_RULES,
@@ -5175,7 +5207,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     options?: ImportBehaviorOptions,
   ): Promise<CompanyPortabilityPreviewResult> {
     const plan = await buildPreview(input, options);
-    return plan.preview;
+    return { ...plan.preview,
+      manifest: redactOpenClawAgentResponse(plan.preview.manifest) as CompanyPortabilityManifest,
+      files: redactGatewayPortableFiles(plan.preview.files),
+    };
   }
 
   async function importBundle(
@@ -5206,6 +5241,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const sourceManifest = plan.source.manifest;
+    const importsGatewayCredentials = plan.preview.plan.agentPlans.some((entry) => {
+      if (entry.action === "skip") return false;
+      const manifest = plan.selectedAgents.find((agent) => agent.slug === entry.slug);
+      if (!manifest) return false;
+      const override = input.adapterOverrides?.[entry.slug];
+      const adapterType = override?.adapterType ?? manifest.adapterType;
+      return hasOpenClawCredentialInput(adapterType, override?.adapterConfig ?? manifest.adapterConfig)
+        || hasOpenClawRuntimeCredentialInput(adapterType, manifest.runtimeConfig)
+        || (adapterType === "openclaw_gateway" && entry.action === "update");
+    });
+    if (importsGatewayCredentials) {
+      if (!options?.authorizeGatewayCredentials) throw forbidden("Gateway credential imports require agent_config:update permission");
+      await options.authorizeGatewayCredentials();
+    }
+    const gatewayActor = { userId: actorUserId ?? null, agentId: options?.actorAgentId ?? null };
+    const gatewayRevision = { recordRevision: { source: "company_import", createdByUserId: gatewayActor.userId, createdByAgentId: gatewayActor.agentId } };
     const pauseAutomations = options?.pauseAutomations === true;
     const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
@@ -5561,7 +5612,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             let updated = await agents.update(planAgent.existingAgentId, {
               ...patch,
               ...automationPausePatch,
-            });
+            }, ...(patch.adapterType === "openclaw_gateway" ? [gatewayRevision] as const : []));
             if (!updated) {
               warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
               resultAgents.push({
@@ -5578,7 +5629,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 clearLegacyPromptTemplate: true,
                 replaceExisting: true,
               });
-              updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+              updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }, ...(patch.adapterType === "openclaw_gateway" ? [gatewayRevision] as const : [])) ?? updated;
             } catch (err) {
               warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -5610,7 +5661,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ...patch,
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          });
+          }, ...(patch.adapterType === "openclaw_gateway" ? [{ actor: gatewayActor }] as const : []));
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,
@@ -5625,7 +5676,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }, ...(patch.adapterType === "openclaw_gateway" ? [gatewayRevision] as const : [])) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }

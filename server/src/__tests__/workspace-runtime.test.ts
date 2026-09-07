@@ -6284,6 +6284,79 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     };
   }
 
+  it("drains child-exit persistence before reset permits fixture parent deletion", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    let releasePersistence!: () => void;
+    let enteredPersistence!: () => void;
+    const persistenceGate = new Promise<void>((resolve) => { releasePersistence = resolve; });
+    const persistenceStarted = new Promise<void>((resolve) => { enteredPersistence = resolve; });
+    let persisted = false;
+    const gatedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "insert") return Reflect.get(target, property, receiver);
+        return (table: typeof workspaceRuntimeServices) => ({
+          values(values: typeof workspaceRuntimeServices.$inferInsert) {
+            const query = target.insert(table).values(values);
+            return {
+              async onConflictDoUpdate(options: Parameters<typeof query.onConflictDoUpdate>[0]) {
+                if (table === workspaceRuntimeServices && values.status === "stopped") {
+                  enteredPersistence();
+                  await persistenceGate;
+                  const result = await query.onConflictDoUpdate(options);
+                  persisted = true;
+                  return result;
+                }
+                return await query.onConflictDoUpdate(options);
+              },
+            };
+          },
+        });
+      },
+    });
+    const script = [
+      "const http=require('node:http');",
+      "const server=http.createServer((req,res)=>{res.end('ok');if(req.url==='/exit')server.close(()=>process.exit(0));});",
+      "server.listen(Number(process.env.PORT),'127.0.0.1');",
+    ].join("");
+    let reset: Promise<void> | undefined;
+    try {
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db: gatedDb,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: fixedPortRuntimeConfig(await findFreePort(), `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`),
+        adapterEnv: {},
+      }))[0]!;
+      await (await fetch(`http://127.0.0.1:${started.port}/exit`, { headers: { Connection: "close" } })).text();
+      await persistenceStarted;
+      let resetCompleted = false;
+      reset = resetRuntimeServicesForTests().then(() => { resetCompleted = true; });
+      // Give an incorrectly non-awaiting reset a complete event-loop turn to
+      // resolve. No elapsed-time assumption controls the persistence gate.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(resetCompleted).toBe(false);
+      expect(persisted).toBe(false);
+      releasePersistence();
+      await reset;
+      expect(persisted).toBe(true);
+      const [row] = await db.select().from(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.id, started.id));
+      expect(row?.status).toBe("stopped");
+      // Actual fixture FK parents can now be deleted without late exit writes.
+      await db.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.id, started.id));
+      await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+    } finally {
+      releasePersistence();
+      await reset;
+      await resetRuntimeServicesForTests({ terminateProcesses: true });
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 15_000);
+
   it("waits for every managed process-tree listener before requesting HTTPS exposure", async () => {
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
@@ -6923,6 +6996,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // Nested afterEach hooks run before the file-level reset. Drain exit
+    // persistence while its FK parents still exist, not after deleting them.
+    await resetRuntimeServicesForTests();
     // Startup reconciliation writes activity_log rows (for example, exposure
     // reservation drift). Delete those rows before the company delete. A stale
     // activity_log row holds a foreign key to the company and makes the company
