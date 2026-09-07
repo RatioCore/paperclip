@@ -144,6 +144,17 @@ describe("approval routes idempotent retries", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  it("denies gateway activation before approval or credential mutations for a create-only actor", async () => {
+    mockApprovalService.getById.mockResolvedValue({ id: "approval-1", companyId: "company-1", type: "hire_agent", status: "pending", payload: { adapterType: "openclaw_gateway", agentId: "agent-1" } });
+    mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "agent_config:update", reason: "deny_missing_grant", explanation: "Update permission required" }));
+    const app = await createApp();
+    const response = await request(app).post("/api/approvals/approval-1/approve").send({});
+    expect(response.status).toBe(403);
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-1",

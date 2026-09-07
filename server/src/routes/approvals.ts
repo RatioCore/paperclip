@@ -19,7 +19,9 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, redactOpenClawAgentResponse } from "../redaction.js";
+import { hasOpenClawCredentialInput, hasOpenClawRuntimeCredentialInput } from "../services/openclaw-credentials.js";
+import { forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
@@ -27,7 +29,7 @@ import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-pa
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
     ...approval,
-    payload: redactEventPayload(approval.payload) ?? {},
+    payload: redactOpenClawAgentResponse(redactEventPayload(approval.payload) ?? {}) as Record<string, unknown>,
   };
 }
 
@@ -55,6 +57,21 @@ export function approvalRoutes(
   const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function assertGatewayCredentialApproval(req: Request, companyId: string, payload: Record<string, unknown>, activation = false) {
+    const mayActivateGateway = activation && (payload.adapterType === "openclaw_gateway"
+      || (payload.adapterType === undefined && typeof payload.agentId === "string"));
+    const credentialAdapterType = payload.adapterType ?? (typeof payload.agentId === "string" ? "openclaw_gateway" : undefined);
+    if (!mayActivateGateway && !hasOpenClawCredentialInput(credentialAdapterType, payload.adapterConfig)
+      && !hasOpenClawRuntimeCredentialInput(credentialAdapterType, payload.runtimeConfig)) return;
+    const decision = await access.decide({
+      actor: req.actor, action: "agent_config:update",
+      resource: typeof payload.agentId === "string"
+        ? { type: "agent", companyId, agentId: payload.agentId }
+        : { type: "company", companyId },
+    });
+    if (!decision.allowed) throw forbidden("Agent configuration update permission required for gateway credentials");
+  }
 
   async function lostReviewPathIssueIds(
     companyId: string,
@@ -232,12 +249,14 @@ export function approvalRoutes(
       : [];
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
+    if (approvalInput.type === "hire_agent") await assertGatewayCredentialApproval(req, companyId, approvalInput.payload);
     const normalizedPayload =
-      approvalInput.type === "hire_agent"
+      approvalInput.type === "hire_agent" && approvalInput.payload.adapterType !== "openclaw_gateway"
+        && !(approvalInput.payload.adapterType === undefined && typeof approvalInput.payload.agentId === "string")
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             companyId,
             approvalInput.payload,
-            { strictMode: strictSecretsMode },
+            { strictMode: strictSecretsMode, actor: { userId: req.actor.userId, agentId: req.actor.agentId } },
           )
         : approvalInput.payload;
 
@@ -288,10 +307,12 @@ export function approvalRoutes(
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await requireApprovalAccess(req, id))) {
+    const existing = await requireApprovalAccess(req, id);
+    if (!existing) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
+    if (existing.type === "hire_agent") await assertGatewayCredentialApproval(req, existing.companyId, existing.payload, true);
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
@@ -474,16 +495,23 @@ export function approvalRoutes(
       return;
     }
 
+    if (existing.type === "hire_agent") {
+      await assertGatewayCredentialApproval(req, existing.companyId, { ...existing.payload, ...req.body.payload });
+    }
     const normalizedPayload = req.body.payload
-      ? existing.type === "hire_agent"
+      ? existing.type === "hire_agent" && (req.body.payload.adapterType ?? existing.payload.adapterType) !== "openclaw_gateway"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
             req.body.payload,
-            { strictMode: strictSecretsMode },
+            {
+              strictMode: strictSecretsMode,
+              adapterType: typeof existing.payload.adapterType === "string" ? existing.payload.adapterType : undefined,
+              actor: { userId: req.actor.userId, agentId: req.actor.agentId },
+            },
           )
         : req.body.payload
       : undefined;
-    const approval = await svc.resubmit(id, normalizedPayload);
+    const approval = await svc.resubmit(id, normalizedPayload, ...((req.body.payload?.adapterType ?? existing.payload.adapterType) === "openclaw_gateway" ? [{ userId: req.actor.userId, agentId: req.actor.agentId }] as const : []));
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,
