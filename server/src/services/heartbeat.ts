@@ -7756,7 +7756,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       actorId: input.actorId,
       agentId: input.agentId,
       runId: input.runId,
-      action: "issue.monitor_recovery_wake_queued",
+      action: deferredRecoveryRequestId ? "issue.monitor_recovery_wake_deferred" : "issue.monitor_recovery_wake_queued",
       entityType: "issue",
       entityId: input.claimed.id,
       details: { ...details, admission: deferredRecoveryRequestId ? "deferred" : "run", wakeRequestId: deferredRecoveryRequestId },

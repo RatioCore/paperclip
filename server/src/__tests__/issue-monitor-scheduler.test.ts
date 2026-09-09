@@ -333,6 +333,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
       expect(activity.map((row) => row.action)).not.toContain("issue.monitor_recovery_wake_queued");
       expect(activity.map((row) => row.action)).toContain("issue.monitor_recovery_wake_not_admitted");
+      expect(activity.find((row) => row.action === "issue.monitor_recovery_wake_not_admitted")?.details)
+        .toMatchObject({ reason: "heartbeat.live_run_limit", wakeRequestId: expect.any(String) });
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
       expect(comments).toHaveLength(1);
       expect(comments[0].body).toContain("No owner run is queued by this recovery");
@@ -404,7 +406,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
       expect(activity.map((row) => row.action)).not.toContain("issue.monitor_dispatch_not_admitted");
       expect(activity.map((row) => row.action)).not.toContain("issue.monitor_recovery_wake_not_admitted");
-      expect(activity.map((row) => row.action)).toContain(recovery ? "issue.monitor_recovery_wake_queued" : "issue.monitor_triggered");
+      expect(activity.map((row) => row.action)).toContain(recovery ? "issue.monitor_recovery_wake_deferred" : "issue.monitor_triggered");
+      expect(activity.map((row) => row.action)).not.toContain("issue.monitor_recovery_wake_queued");
       const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
       expect(issue.monitorNextCheckAt).toBeNull();
       await heartbeat.cancelRun(holdingRunId, "Release isolated test holder");

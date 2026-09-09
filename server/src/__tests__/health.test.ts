@@ -84,7 +84,7 @@ describe("GET /health", () => {
     const res = await request(app).get("/health/runtime-build");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      runtimeBuildId: "rata2665-monitor-admission-v1",
+      runtimeBuildId: "rata2665-monitor-admission-v2",
       baseCommit: "144e0d757cd02d7211336ec2d195aac5b2978498",
     });
   });
@@ -102,7 +102,7 @@ describe("GET /health", () => {
       .get("/health/runtime-admission-dry-run").query({ agentId: "11111111-1111-4111-8111-111111111111" });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      runtimeBuildId: "rata2665-monitor-admission-v1", readOnly: true,
+      runtimeBuildId: "rata2665-monitor-admission-v2", readOnly: true,
       agentId: "11111111-1111-4111-8111-111111111111", observed: 2, limit: 2, decision: "skip_capacity",
       writeCounters: { heartbeatRuns: 7, wakeupRequests: 5, activity: 11 },
     });

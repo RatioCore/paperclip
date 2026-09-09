@@ -22,7 +22,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { parseMaxLiveRuns } from "../services/live-run-admission.js";
 import { serverVersion } from "../version.js";
 
-const RUNTIME_BUILD_ID = "rata2665-monitor-admission-v1";
+const RUNTIME_BUILD_ID = "rata2665-monitor-admission-v2";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
