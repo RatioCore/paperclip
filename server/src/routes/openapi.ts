@@ -763,6 +763,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/health/runtime-admission-dry-run",
   "POST /api/agents/{id}/gateway-auth-token-binding",
   "GET /api/cloud/stacks",
   "GET /api/companies",
@@ -1194,6 +1195,34 @@ registry.registerPath({
       runtimeBuildId: z.string(),
       baseCommit: z.string(),
     }).strict()),
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/health/runtime-admission-dry-run",
+  tags: ["health"],
+  summary: "Inspect live-run capacity without admitting work",
+  description: "Board-only in authenticated deployments. Returns a read-only capacity snapshot, not an admission reservation or proof that a later wake will be accepted.",
+  request: { query: z.object({ agentId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.object({
+      runtimeBuildId: z.string(),
+      readOnly: z.literal(true),
+      agentId: z.string().uuid(),
+      observed: z.number().int().nonnegative(),
+      limit: z.number().int().nonnegative().nullable(),
+      decision: z.enum(["skip_capacity", "admit"]),
+      writeCounters: z.object({
+        heartbeatRuns: z.number().int().nonnegative(),
+        wakeupRequests: z.number().int().nonnegative(),
+        activity: z.number().int().nonnegative(),
+      }).strict(),
+    }).strict()),
+    400: r.badRequest,
+    403: r.forbidden,
+    404: r.notFound,
+    503: r.serverError,
   },
 });
 

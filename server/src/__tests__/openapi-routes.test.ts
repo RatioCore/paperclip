@@ -256,6 +256,18 @@ describe("openapi routes", () => {
     const { spec } = loadSpecRoutes();
 
     expect(spec.paths["/api/openapi.json"].get.security).toEqual([]);
+    const admission = spec.paths["/api/health/runtime-admission-dry-run"]?.get;
+    expect(admission?.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(admission?.["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(admission?.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "agentId", in: "query", required: true }),
+    ]));
+    for (const code of ["200", "400", "403", "404", "503"]) {
+      expect(admission?.responses[code]).toBeDefined();
+    }
     expect(spec.paths["/api/plugins/install"].post.security).toEqual([
       { BoardSessionAuth: [] },
       { BoardApiKeyAuth: [] },
