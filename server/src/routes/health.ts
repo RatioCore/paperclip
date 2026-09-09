@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
@@ -19,9 +19,10 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { parseMaxLiveRuns } from "../services/live-run-admission.js";
 import { serverVersion } from "../version.js";
 
-const RUNTIME_BUILD_ID = "rata2110-governed-queue-v4";
+const RUNTIME_BUILD_ID = "rata2665-monitor-admission-v2";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -131,7 +132,52 @@ export function healthRoutes(
   router.get("/runtime-build", (_req, res) => {
     res.json({
       runtimeBuildId: RUNTIME_BUILD_ID,
-      baseCommit: "213dabab4f8e1f3bb1803a2924c0fea1289fcd4c",
+      baseCommit: "144e0d757cd02d7211336ec2d195aac5b2978498",
+    });
+  });
+
+  router.get("/runtime-admission-dry-run", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (opts.deploymentMode === "authenticated" && actorType !== "board") {
+      res.status(403).json({ error: "board_access_required" });
+      return;
+    }
+    if (!db) {
+      res.status(503).json({ error: "database_unavailable" });
+      return;
+    }
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId.trim() : "";
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(agentId)) {
+      res.status(400).json({ error: "valid_agent_id_required" });
+      return;
+    }
+    const agent = await db
+      .select({ id: agents.id, companyId: agents.companyId, runtimeConfig: agents.runtimeConfig })
+      .from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    if (!agent) {
+      res.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    const [{ observed }, { heartbeatRunCount }, { wakeupRequestCount }, { activityCount }] = await Promise.all([
+      db.select({ observed: count() }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+      )).then((rows) => rows[0] ?? { observed: 0 }),
+      db.select({ heartbeatRunCount: count() }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+      )).then((rows) => rows[0] ?? { heartbeatRunCount: 0 }),
+      db.select({ wakeupRequestCount: count() }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agent.id),
+      )).then((rows) => rows[0] ?? { wakeupRequestCount: 0 }),
+      db.select({ activityCount: count() }).from(activityLog).where(eq(activityLog.companyId, agent.companyId))
+        .then((rows) => rows[0] ?? { activityCount: 0 }),
+    ]);
+    const limit = parseMaxLiveRuns(agent.runtimeConfig);
+    res.json({
+      runtimeBuildId: RUNTIME_BUILD_ID, readOnly: true, agentId: agent.id,
+      observed: Number(observed), limit,
+      decision: limit !== null && Number(observed) >= limit ? "skip_capacity" : "admit",
+      writeCounters: { heartbeatRuns: Number(heartbeatRunCount), wakeupRequests: Number(wakeupRequestCount), activity: Number(activityCount) },
     });
   });
 

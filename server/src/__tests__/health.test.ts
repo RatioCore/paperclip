@@ -84,9 +84,29 @@ describe("GET /health", () => {
     const res = await request(app).get("/health/runtime-build");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      runtimeBuildId: "rata2110-governed-queue-v4",
-      baseCommit: "213dabab4f8e1f3bb1803a2924c0fea1289fcd4c",
+      runtimeBuildId: "rata2665-monitor-admission-v2",
+      baseCommit: "144e0d757cd02d7211336ec2d195aac5b2978498",
     });
+  });
+
+  it("preserves the installed SELECT-only admission diagnostic", async () => {
+    const selectedRows = [
+      [{ id: "11111111-1111-4111-8111-111111111111", companyId: "company-1", runtimeConfig: { heartbeat: { maxLiveRuns: 2 } } }],
+      [{ observed: 2 }], [{ heartbeatRunCount: 7 }], [{ wakeupRequestCount: 5 }], [{ activityCount: 11 }],
+    ];
+    const select = vi.fn(() => {
+      const result = selectedRows.shift() ?? [];
+      return { from: () => ({ where: () => Promise.resolve(result) }) };
+    });
+    const res = await request(createApp({ select } as unknown as Db))
+      .get("/health/runtime-admission-dry-run").query({ agentId: "11111111-1111-4111-8111-111111111111" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      runtimeBuildId: "rata2665-monitor-admission-v2", readOnly: true,
+      agentId: "11111111-1111-4111-8111-111111111111", observed: 2, limit: 2, decision: "skip_capacity",
+      writeCounters: { heartbeatRuns: 7, wakeupRequests: 5, activity: 11 },
+    });
+    expect(select).toHaveBeenCalledTimes(5);
   });
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
