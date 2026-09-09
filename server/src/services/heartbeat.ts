@@ -7683,7 +7683,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
-    await enqueueWakeup(input.claimed.assigneeAgentId!, {
+    let deferredRecoveryRequestId: string | null = null;
+    const recoveryRun = await enqueueWakeup(input.claimed.assigneeAgentId!, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_monitor_recovery",
@@ -7712,7 +7713,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         maxAttempts: input.monitor?.maxAttempts ?? null,
         ...(reviewPathContext ?? {}),
       }, "status_only"),
-    });
+    }, (requestId) => { deferredRecoveryRequestId = requestId; });
+
+    if (!recoveryRun && !deferredRecoveryRequestId) {
+      const receipt = await db
+        .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.claimed.companyId),
+          eq(agentWakeupRequests.agentId, input.claimed.assigneeAgentId!),
+          eq(agentWakeupRequests.idempotencyKey, `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`),
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (receipt?.status !== "deferred_issue_execution") {
+        await db.insert(issueComments).values({
+          companyId: input.claimed.companyId,
+          issueId: input.claimed.id,
+          authorAgentId: null,
+          authorUserId: null,
+          body: `Monitor recovery wake was not admitted (${receipt?.reason ?? "wake_receipt_missing"}). No owner run is queued by this recovery. The original assignee remains responsible for restoring a bounded live path on this same task; do not reset counters or bypass live-run, pause, or approval gates.`,
+        });
+        await logActivity(db, {
+          companyId: input.claimed.companyId,
+          actorType: input.actorType,
+          actorId: input.actorId,
+          agentId: input.agentId,
+          runId: input.runId,
+          action: "issue.monitor_recovery_wake_not_admitted",
+          entityType: "issue",
+          entityId: input.claimed.id,
+          details: { ...details, wakeRequestId: receipt?.id ?? null, reason: receipt?.reason ?? "wake_receipt_missing" },
+        });
+        return;
+      }
+    }
 
     await logActivity(db, {
       companyId: input.claimed.companyId,
@@ -7723,7 +7759,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       action: "issue.monitor_recovery_wake_queued",
       entityType: "issue",
       entityId: input.claimed.id,
-      details,
+      details: { ...details, admission: deferredRecoveryRequestId ? "deferred" : "run", wakeRequestId: deferredRecoveryRequestId },
     });
   }
 
@@ -7872,7 +7908,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     try {
-      await enqueueWakeup(targetAgentId, {
+      let deferredRequestId: string | null = null;
+      const wakeRun = await enqueueWakeup(targetAgentId, {
         source: input.source,
         triggerDetail: input.triggerDetail,
         reason: wakeReason,
@@ -7899,7 +7936,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...reviewRecoveryContext,
           manualTrigger: input.activitySource === "manual",
         },
-      });
+      }, (requestId) => { deferredRequestId = requestId; });
+
+      // A null wake can mean skipped admission or a persisted deferred request.
+      // The transaction receipt also covers merges under an earlier key.
+      if (!wakeRun && !deferredRequestId) {
+        const receipt = await db
+          .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+          .from(agentWakeupRequests)
+          .where(and(
+            eq(agentWakeupRequests.companyId, claimed.companyId),
+            eq(agentWakeupRequests.agentId, targetAgentId),
+            eq(agentWakeupRequests.idempotencyKey, `issue-monitor:${claimed.id}:${scheduledAtIso}`),
+          ))
+          .orderBy(desc(agentWakeupRequests.requestedAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (receipt?.status !== "deferred_issue_execution") {
+          const hasRetryBound = monitor?.maxAttempts != null || parseMonitorDate(monitor?.timeoutAt) !== null;
+          await db.update(issues).set({
+            ...(!hasRetryBound ? buildIssueMonitorClearedPatch({
+              issue: claimed,
+              policy,
+              clearReason: "dispatch_skipped",
+              clearedAt: input.now,
+            }) : {}),
+            monitorWakeRequestedAt: null,
+            monitorAttemptCount: nextAttemptCount,
+            updatedAt: input.now,
+          }).where(eq(issues.id, claimed.id));
+          await logActivity(db, {
+            companyId: claimed.companyId,
+            actorType: input.actorType,
+            actorId: input.actorId,
+            agentId: input.agentId,
+            runId: input.runId,
+            action: "issue.monitor_dispatch_not_admitted",
+            entityType: "issue",
+            entityId: claimed.id,
+            details: {
+              identifier: claimed.identifier,
+              nextCheckAt: scheduledAtIso,
+              attemptCount: nextAttemptCount,
+              wakeRequestId: receipt?.id ?? null,
+              reason: receipt?.reason ?? "wake_receipt_missing",
+              ...monitorMetadata,
+              source: input.activitySource,
+            },
+          });
+          if (!hasRetryBound) {
+            await db.insert(issueComments).values({
+              companyId: claimed.companyId,
+              issueId: claimed.id,
+              body: "Monitor wake was not admitted and the historical monitor has no retry bound. The one-shot schedule is cleared, not triggered. The original assignee owns restoring an explicit bounded path on this same task; board attention is required if the owner remains unavailable. Do not reset counters or bypass admission gates.",
+            });
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_escalated_to_board",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: { reason: "unbounded_monitor_admission_rejected", assigneeAgentId: claimed.assigneeAgentId },
+            });
+          }
+          return { outcome: "skipped" as const, reason: receipt?.reason ?? "wake_receipt_missing" };
+        }
+      }
 
       await db
         .update(issues)
@@ -7930,6 +8035,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           notes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
           source: input.activitySource,
+          admission: deferredRequestId ? "deferred" : "run",
+          wakeRequestId: deferredRequestId,
         },
       });
 
@@ -17084,7 +17191,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+  async function enqueueWakeup(
+    agentId: string,
+    opts: WakeupOptions = {},
+    onDeferredAdmission?: (requestId: string) => void,
+  ) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
@@ -17930,10 +18041,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 })
                 .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
-              return { kind: "deferred" as const };
+              return { kind: "deferred" as const, requestId: existingDeferred.id };
             }
 
-            await tx.insert(agentWakeupRequests).values({
+            const [deferredRequest] = await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
               agentId,
               source,
@@ -17944,9 +18055,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
-            });
+            }).returning({ id: agentWakeupRequests.id });
 
-            return { kind: "deferred" as const };
+            return { kind: "deferred" as const, requestId: deferredRequest!.id };
           }
         }
 
@@ -18139,7 +18250,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred") {
+        // Publish only after the transaction commits; never infer admission
+        // from a stale row whose idempotency key happens to match.
+        onDeferredAdmission?.(outcome.requestId);
+        return null;
+      }
+      if (outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
