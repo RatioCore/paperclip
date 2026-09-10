@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import express, { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../multipart-limits.js";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
@@ -60,7 +61,7 @@ const PORTABLE_ZIP_CONTENT_TYPES = ["application/zip", "application/x-zip-compre
 
 const zipPackageUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES, files: 1 },
+  limits: { ...MULTIPART_FIELD_LIMITS, fileSize: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES, files: 1 },
 });
 
 const rawZipBodyParser = express.raw({

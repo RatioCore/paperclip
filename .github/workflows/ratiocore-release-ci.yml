@@ -50,6 +50,8 @@ jobs:
           server/src/__tests__/issue-monitor-scheduler.test.ts
           server/src/__tests__/governed-queue-dispatch.test.ts
           server/src/__tests__/issue-comment-reopen-routes.test.ts
+          server/src/__tests__/issue-attachment-routes.test.ts
+          server/src/__tests__/assets.test.ts
           server/src/__tests__/routable-blocked.test.ts
           server/src/__tests__/productivity-review-service.test.ts
           packages/adapters/openclaw-gateway/src/ui/build-config.test.ts
