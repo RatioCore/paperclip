@@ -40,6 +40,7 @@ import type {
   AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
+  AttentionScope,
   AttentionSourceKind,
   AttentionSubject,
   AttentionTriageAttribution,
@@ -80,6 +81,15 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "budget_alert",
   "agent_error_alert",
 ];
+
+// Decisions is a board-action surface, not a generic alarm feed. Operational
+// items remain retrievable through the explicit `scope=all` inspection view.
+const BOARD_ACTION_SOURCE_KINDS = new Set<AttentionSourceKind>([
+  "approval",
+  "decision",
+  "issue_thread_interaction",
+  "join_request",
+]);
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
   critical: 0,
@@ -1082,10 +1092,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         dismissalByKey(db, companyId, options.userId),
       ]);
       const includeDismissed = options.includeDismissed === true;
+      const scope: AttentionScope = options.scope === "all" ? "all" : "board";
       const now = serviceOptions.now?.() ?? Date.now();
       const collected: AttentionItem[] = [];
 
       const add = (item: AttentionItem) => {
+        if (scope === "board" && !BOARD_ACTION_SOURCE_KINDS.has(item.sourceKind)) return;
         const dismissal = activeDismissalState(dismissals, item.dismissalKey, item.activityAt, now);
         if (!includeDismissed && dismissal?.isActive) return;
         collected.push({ ...item, dismissal });

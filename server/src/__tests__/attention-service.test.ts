@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -252,11 +252,74 @@ describeEmbeddedPostgres("attention service", () => {
       addedByUserId: "board-user",
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
 
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it("defaults the Decisions feed and badge to board action while retaining explicit operational inspection", async () => {
+    const { companyId, errorAgentId } = await seedCompany("ATSNAPSHOT");
+    await db.update(agents).set({ status: "idle", errorReason: null }).where(eq(agents.id, errorAgentId));
+    const interactionIssueId = await insertIssue({
+      companyId,
+      identifier: "ATSNAPSHOT-1",
+      title: "Board triage",
+      status: "in_progress",
+    });
+
+    await Promise.all(Array.from({ length: 55 }, (_, index) => insertIssue({
+      companyId,
+      identifier: `ATSNAPSHOT-B${index + 1}`,
+      title: `Blocked execution ${index + 1}`,
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Choose an unblock path." },
+      blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + index + 1),
+    })));
+    await Promise.all(Array.from({ length: 9 }, (_, index) => insertIssue({
+      companyId,
+      identifier: `ATSNAPSHOT-R${index + 1}`,
+      title: `Agent review ${index + 1}`,
+      status: "in_review",
+      assigneeUserId: "board-user",
+    })));
+
+    const interactionIds = Array.from({ length: 11 }, () => randomUUID());
+    await db.insert(issueThreadInteractions).values(interactionIds.map((id, index) => ({
+      id,
+      companyId,
+      issueId: interactionIssueId,
+      kind: "ask_user_questions" as const,
+      status: "pending" as const,
+      continuationPolicy: "wake_assignee" as const,
+      title: `Board interaction ${index + 1}`,
+      payload: { version: 1, questions: [] },
+    })));
+
+    const boardFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(boardFeed.totalCount).toBe(11);
+    expect(boardFeed.deskBadgeCount).toBe(11);
+    expect(boardFeed.countsBySourceKind.blocker_attention).toBe(0);
+    expect(boardFeed.countsBySourceKind.review).toBe(0);
+    expect(boardFeed.countsBySourceKind.issue_thread_interaction).toBe(11);
+
+    const allAttention = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
+    expect(allAttention.totalCount).toBe(75);
+    expect(allAttention.countsBySourceKind.blocker_attention).toBe(55);
+    expect(allAttention.countsBySourceKind.review).toBe(9);
+
+    await db.update(issueThreadInteractions)
+      .set({ status: "accepted" })
+      .where(inArray(issueThreadInteractions.id, interactionIds.slice(0, 9)));
+    expect((await attentionService(db).list(companyId, { userId: "board-user" })).totalCount).toBe(2);
+
+    await db.update(issueThreadInteractions)
+      .set({ status: "cancelled" })
+      .where(eq(issueThreadInteractions.id, interactionIds[9]!));
+    const resolvedFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(resolvedFeed.totalCount).toBe(1);
+    expect(resolvedFeed.deskBadgeCount).toBe(1);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -614,7 +677,7 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
 
     expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({

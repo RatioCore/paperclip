@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Inbox } from "lucide-react";
-import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
+import type { Agent, AttentionItem, AttentionScope, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
@@ -102,6 +102,7 @@ export function WhatNeedsMe() {
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
   const [sortOrder, setSortOrder] = useState<AttentionSortOrder>(() => loadAttentionSortOrder());
   const [filters, setFilters] = useState<AttentionFilterState>(() => defaultAttentionFilterState);
+  const [attentionScope, setAttentionScope] = useState<AttentionScope>("board");
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
@@ -157,10 +158,12 @@ export function WhatNeedsMe() {
       "with-dismissed",
       activityBounds.activitySince ?? null,
       activityBounds.activityUntil ?? null,
+      attentionScope,
     ],
     queryFn: () => attentionApi.list(selectedCompanyId!, {
       includeDismissed: true,
       all: true,
+      scope: attentionScope,
       ...activityBounds,
     }),
     enabled: !!selectedCompanyId,
@@ -520,16 +523,25 @@ export function WhatNeedsMe() {
     <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold">Decisions</h1>
-        <DecisionsToolbar
-          visibleCount={visibleCount}
-          filterOptions={filterOptions}
-          filters={filters}
-          onFiltersChange={updateFilters}
-          groupBy={groupBy}
-          onGroupByChange={updateGroupBy}
-          sortOrder={sortOrder}
-          onSortOrderChange={updateSortOrder}
-        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="text-sm text-muted-foreground hover:text-foreground"
+            onClick={() => setAttentionScope((scope) => scope === "board" ? "all" : "board")}
+          >
+            {attentionScope === "board" ? "Show all attention" : "Board decisions only"}
+          </button>
+          <DecisionsToolbar
+            visibleCount={visibleCount}
+            filterOptions={filterOptions}
+            filters={filters}
+            onFiltersChange={updateFilters}
+            groupBy={groupBy}
+            onGroupByChange={updateGroupBy}
+            sortOrder={sortOrder}
+            onSortOrderChange={updateSortOrder}
+          />
+        </div>
       </div>
 
       {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
