@@ -6516,6 +6516,7 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  productivityReviewIssueGenerationEnabled?: boolean;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -6579,6 +6580,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
+  // Routes also create heartbeat services without the scheduler's Config object.
+  const productivityReviewIssueGenerationEnabled = options.productivityReviewIssueGenerationEnabled
+    ?? runtimeEnv.PAPERCLIP_PRODUCTIVITY_REVIEW_ISSUE_GENERATION_ENABLED === "true";
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE);
   // Preview worktree instances suppress the run engine by default. Users can lift
   // that per-worktree via the `enableWorktreeRunExecution` experimental setting
@@ -9176,6 +9180,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         companyId: issue.companyId,
         issueId: issue.id,
         agentId: run.agentId,
+        issueGenerationEnabled: productivityReviewIssueGenerationEnabled,
       });
       if (productivityHold.held) {
         await setRunStatus(run.id, run.status, {
@@ -13416,7 +13421,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
-    return productivityReviews.reconcileProductivityReviews({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return productivityReviews.reconcileProductivityReviews({
+      ...opts,
+      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
+      issueGenerationEnabled: productivityReviewIssueGenerationEnabled,
+    });
   }
 
   async function reconcileTaskWatchdogs(opts?: { companyId?: string | null; runId?: string | null }) {

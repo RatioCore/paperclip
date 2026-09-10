@@ -1568,6 +1568,70 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it.each(["in_review", "blocked", "done", "cancelled"] as const)(
+    "does not wake the assignee when backlog moves to passive state %s",
+    async (status) => {
+      const issue = makeIssue("backlog");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+      if (status === "blocked") {
+        // The blocked-entry validator reads pending interactions and approvals.
+        mockDbSelectWhere.mockImplementation(() => ({
+          orderBy: mockDbSelectOrderBy,
+          limit: async () => [],
+          then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+            Promise.resolve([]).then(onFulfilled, onRejected),
+        }));
+        mockDbSelectFrom.mockImplementation(() => ({
+          where: mockDbSelectWhere,
+          innerJoin: () => ({ where: mockDbSelectWhere }),
+        }));
+      }
+
+      const res = await request(await installActor(createApp()))
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status,
+          ...(status === "blocked"
+            ? { unblockDescriptor: { owner: "board", action: "Choose the maintenance window" } }
+            : {}),
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe(status);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["todo", "in_progress"] as const)(
+    "wakes the assignee when backlog moves to runnable state %s",
+    async (status) => {
+      const issue = makeIssue("backlog");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await installActor(createApp()))
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status });
+
+      expect(res.status).toBe(200);
+      await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        issue.assigneeAgentId,
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    },
+  );
+
   it("wakes the assignee when an assigned blocked issue moves back to todo", async () => {
     const issue = makeIssue("blocked");
     mockIssueService.getById.mockResolvedValue(issue);
@@ -3258,7 +3322,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("coerces executor handoff patches into workflow-controlled review wakes", async () => {
+  it.each(["in_progress", "backlog"] as const)("coerces executor handoff from %s into workflow-controlled review wakes", async (status) => {
     const policy = await normalizePolicy({
       stages: [
         {
@@ -3270,7 +3334,7 @@ describe.sequential("issue comment reopen routes", () => {
     })!;
     const issue = {
       ...makeIssue("todo"),
-      status: "in_progress",
+      status,
       assigneeAgentId: "22222222-2222-4222-8222-222222222222",
       executionPolicy: policy,
       executionState: null,
@@ -3335,6 +3399,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 
   it("wakes the return assignee with execution_changes_requested", async () => {

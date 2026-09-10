@@ -9504,9 +9504,11 @@ export function issueRoutes(
 
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
-    const statusChangedFromBacklog =
+    // Passive review, blocked and terminal states are not execution requests.
+    // Typed review/approval stages retain their dedicated wakeup path below.
+    const statusChangedFromBacklogToRunnable =
       existing.status === "backlog" &&
-      issue.status !== "backlog" &&
+      (issue.status === "todo" || issue.status === "in_progress") &&
       req.body.status !== undefined;
     const statusChangedFromClosedToTodo =
       isClosedIssueStatus(existing.status) &&
@@ -9626,7 +9628,7 @@ export function issueRoutes(
       if (
         !assigneeChanged &&
         (
-          statusChangedFromBacklog ||
+          statusChangedFromBacklogToRunnable ||
           statusChangedFromBlockedToTodo ||
           statusChangedFromClosedToTodo ||
           userResumedFromReviewToTodo

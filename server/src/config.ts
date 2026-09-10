@@ -85,6 +85,7 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  productivityReviewIssueGenerationEnabled: boolean;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +332,8 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    productivityReviewIssueGenerationEnabled:
+      process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_ISSUE_GENERATION_ENABLED === "true",
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
