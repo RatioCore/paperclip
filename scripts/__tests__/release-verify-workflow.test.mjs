@@ -10,8 +10,19 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
+function readDisabledPublishingWorkflow(name) {
+  return readFileSync(path.join(repoRoot, ".github/disabled-workflows", name), "utf8");
+}
+
+test("master keeps publishing workflows outside GitHub Actions discovery", () => {
+  for (const name of ["release.yml", "docker.yml", "agent-runtime-images.yml"]) {
+    assert.throws(() => readWorkflow(name), { code: "ENOENT" });
+    assert.ok(readDisabledPublishingWorkflow(name).length > 0);
+  }
+});
+
 test("release workflow delegates stable and canary verification to the reusable workflow", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
+  const releaseWorkflow = readDisabledPublishingWorkflow("release.yml");
 
   assert.match(
     releaseWorkflow,
@@ -39,7 +50,7 @@ test("onboard smoke container binds beyond loopback so the mapped port is reacha
 });
 
 test("promotion selection guards against sources that predate their channel tooling", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
+  const releaseWorkflow = readDisabledPublishingWorkflow("release.yml");
 
   // Promotions run the source commit's release.sh, so selection must reject
   // sources whose tooling does not know the target channel yet.
@@ -48,7 +59,7 @@ test("promotion selection guards against sources that predate their channel tool
 });
 
 test("candidate-branch betas are validated and fully verified before publish", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
+  const releaseWorkflow = readDisabledPublishingWorkflow("release.yml");
 
   // Candidate heads are new commits: selection must pin the naming
   // convention and publication must be gated on full verification.
@@ -61,7 +72,7 @@ test("candidate-branch betas are validated and fully verified before publish", (
 });
 
 test("post-publish beta smoke survives the skipped candidate-verification ancestor", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
+  const releaseWorkflow = readDisabledPublishingWorkflow("release.yml");
 
   // publish_beta's needs chain contains verify_beta_candidate, which is
   // skipped on promote-mode betas. An `if:` without a status-check function
@@ -74,7 +85,7 @@ test("post-publish beta smoke survives the skipped candidate-verification ancest
 });
 
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
+  const releaseWorkflow = readDisabledPublishingWorkflow("release.yml");
 
   // GITHUB_TOKEN may not create refs pointing at workflow-modifying commits
   // from dispatch or scheduled runs; a rejected tag push after a successful
