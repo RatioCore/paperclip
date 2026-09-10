@@ -725,7 +725,10 @@ export async function startServer(): Promise<StartedServer> {
   };
   const pluginWorkerManager = createPluginWorkerManager();
   const heartbeat = config.heartbeatSchedulerEnabled
-    ? heartbeatService(db as any, { pluginWorkerManager })
+    ? heartbeatService(db as any, {
+      pluginWorkerManager,
+      productivityReviewIssueGenerationEnabled: config.productivityReviewIssueGenerationEnabled,
+    })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
