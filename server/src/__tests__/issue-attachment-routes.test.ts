@@ -262,6 +262,20 @@ describe("issue attachment routes", () => {
     mockWorkProductService.update.mockReset();
   });
 
+  it("rejects oversized multipart array indexes before storing an attachment", async () => {
+    const storage = createStorageService();
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/zip", "bundle.zip"));
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .field("items[101]", "untrusted metadata")
+      .attach("file", Buffer.from("zip"), { filename: "bundle.zip", contentType: "application/zip" });
+
+    expect(res.status).toBe(400);
+    expect(storage.__calls.putFile).toBeUndefined();
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+  });
+
   it("accepts zip uploads for issue attachments", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({
@@ -274,6 +288,7 @@ describe("issue attachment routes", () => {
     const app = await createApp(storage);
     const res = await request(app)
       .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .field("items[100]", "bounded metadata")
       .attach("file", Buffer.from("zip"), { filename: "bundle.zip", contentType: "application/zip" });
 
     expect([200, 201]).toContain(res.status);

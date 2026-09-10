@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../multipart-limits.js";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
@@ -87,11 +88,11 @@ export function assetRoutes(db: Db, storage: StorageService) {
   const svc = assetService(db);
   const assetUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+    limits: { ...MULTIPART_FIELD_LIMITS, fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
   const companyLogoUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+    limits: { ...MULTIPART_FIELD_LIMITS, fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
   async function runSingleFileUpload(

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../multipart-limits.js";
 import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -587,7 +588,7 @@ function caseDocumentResponse(input: { key: string; document: typeof documents.$
 function singleFileUpload(req: Request, res: Response, maxBytes: number) {
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: maxBytes, files: 1 },
+    limits: { ...MULTIPART_FIELD_LIMITS, fileSize: maxBytes, files: 1 },
   }).single("file");
   return new Promise<void>((resolve, reject) => {
     upload(req, res, (err) => {

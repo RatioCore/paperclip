@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../multipart-limits.js";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -3549,7 +3550,7 @@ export function issueRoutes(
   async function runSingleFileUpload(req: Request, res: Response, fileSizeLimit: number) {
     const upload = multer({
       storage: multer.memoryStorage(),
-      limits: { fileSize: fileSizeLimit, files: 1 },
+      limits: { ...MULTIPART_FIELD_LIMITS, fileSize: fileSizeLimit, files: 1 },
     });
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
