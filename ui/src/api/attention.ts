@@ -12,6 +12,7 @@ export const attentionApi = {
     if (options.includeDismissed) params.set("includeDismissed", "true");
     if (options.archived) params.set("archived", "true");
     if (options.all) params.set("all", "true");
+    if (options.scope) params.set("scope", options.scope);
     if (options.activitySince) params.set("activitySince", options.activitySince);
     if (options.activityUntil) params.set("activityUntil", options.activityUntil);
     if (options.queue) params.set("queue", options.queue);

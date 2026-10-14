@@ -25,6 +25,7 @@ export type {
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
+  AttentionScope,
   AttentionProjectRef,
   AttentionQueueRef,
   AttentionResolverAudience,

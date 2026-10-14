@@ -81,11 +81,16 @@ export interface AttentionTriageAttribution {
 
 export type AttentionSortMode = "activity" | "decide";
 
+/** The default Decisions desk intentionally excludes operational noise. */
+export type AttentionScope = "board" | "all";
+
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
   archived?: boolean;
   /** Return the complete filtered snapshot in one response. */
   all?: boolean;
+  /** `board` is the Decisions default; `all` is the explicit inspection view. */
+  scope?: AttentionScope;
   activitySince?: string;
   activityUntil?: string;
   queue?: string;
