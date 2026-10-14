@@ -2,7 +2,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
-import { redactSensitive } from "./redact-sensitive.js";
+import { redactSensitive, redactHttpRequestBody } from "./redact-sensitive.js";
 import { redactWorkspaceHandoffTicket } from "../auth/workspace-login-handoff.js";
 
 const sharedOpts = {
@@ -45,7 +45,7 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: redactSensitive(ctx.reqBody),
+          reqBody: redactHttpRequestBody(ctx.reqBody, req.url ?? ""),
           reqParams: redactSensitive(ctx.reqParams),
           reqQuery: redactSensitive(ctx.reqQuery),
         };
@@ -53,7 +53,7 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = redactSensitive(body);
+        props.reqBody = redactHttpRequestBody(body, req.url ?? "");
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = redactSensitive(params);
