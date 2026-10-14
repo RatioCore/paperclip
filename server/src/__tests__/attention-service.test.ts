@@ -252,14 +252,14 @@ describeEmbeddedPostgres("attention service", () => {
       addedByUserId: "board-user",
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
   });
 
-  it("defaults the Decisions feed and badge to board action while retaining explicit operational inspection", async () => {
+  it("scopes the Decisions feed and badge to board action while keeping the service default complete", async () => {
     const { companyId, errorAgentId } = await seedCompany("ATSNAPSHOT");
     await db.update(agents).set({ status: "idle", errorReason: null }).where(eq(agents.id, errorAgentId));
     const interactionIssueId = await insertIssue({
@@ -297,7 +297,16 @@ describeEmbeddedPostgres("attention service", () => {
       payload: { version: 1, questions: [] },
     })));
 
-    const boardFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    // The service default stays the complete legacy feed: internal consumers
+    // (retention, liveness, integrations) are unaffected by the desk default.
+    const defaultFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(defaultFeed.totalCount).toBe(130);
+    expect(defaultFeed.countsBySourceKind.blocker_attention).toBe(110);
+    expect(defaultFeed.countsBySourceKind.review).toBe(9);
+    expect(defaultFeed.countsBySourceKind.issue_thread_interaction).toBe(11);
+
+    // The board scope keeps only board-action sources.
+    const boardFeed = await attentionService(db).list(companyId, { userId: "board-user", scope: "board" });
     expect(boardFeed.totalCount).toBe(11);
     expect(boardFeed.deskBadgeCount).toBe(11);
     expect(boardFeed.countsBySourceKind.blocker_attention).toBe(0);
@@ -305,21 +314,27 @@ describeEmbeddedPostgres("attention service", () => {
     expect(boardFeed.countsBySourceKind.issue_thread_interaction).toBe(11);
 
     const allAttention = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
-    expect(allAttention.totalCount).toBe(75);
-    expect(allAttention.countsBySourceKind.blocker_attention).toBe(55);
+    expect(allAttention.totalCount).toBe(130);
+    expect(allAttention.countsBySourceKind.blocker_attention).toBe(110);
     expect(allAttention.countsBySourceKind.review).toBe(9);
 
     await db.update(issueThreadInteractions)
       .set({ status: "accepted" })
       .where(inArray(issueThreadInteractions.id, interactionIds.slice(0, 9)));
-    expect((await attentionService(db).list(companyId, { userId: "board-user" })).totalCount).toBe(2);
+    expect((await attentionService(db).list(companyId, { userId: "board-user", scope: "board" })).totalCount).toBe(2);
 
     await db.update(issueThreadInteractions)
       .set({ status: "cancelled" })
       .where(eq(issueThreadInteractions.id, interactionIds[9]!));
-    const resolvedFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const resolvedFeed = await attentionService(db).list(companyId, { userId: "board-user", scope: "board" });
     expect(resolvedFeed.totalCount).toBe(1);
     expect(resolvedFeed.deskBadgeCount).toBe(1);
+
+    // Operational rows remain visible in the explicit all-attention view while
+    // the board feed is resolved.
+    const operationalFeed = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
+    expect(operationalFeed.countsBySourceKind.blocker_attention).toBe(110);
+    expect(operationalFeed.countsBySourceKind.issue_thread_interaction).toBe(1);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -677,7 +692,7 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user", scope: "all" });
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
     expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({

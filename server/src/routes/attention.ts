@@ -34,6 +34,10 @@ export function attentionRoutes(db: Db) {
     if (scope !== undefined && scope !== "board" && scope !== "all") {
       throw badRequest("scope must be 'board' or 'all'");
     }
+    // The Decisions desk defaults to board action; callers opt into `all`
+    // explicitly. The service itself keeps `all` as its default so internal
+    // consumers are unaffected.
+    const effectiveScope: "board" | "all" = scope ?? "board";
     const cursor = optionalQueryString(req.query.cursor, "cursor");
     const sortValue = optionalQueryString(req.query.sort, "sort");
     if (sortValue !== undefined && sortValue !== "activity" && sortValue !== "decide") {
@@ -51,7 +55,7 @@ export function attentionRoutes(db: Db) {
       activitySince,
       activityUntil,
       queue,
-      scope: scope as "board" | "all" | undefined,
+      scope: effectiveScope,
       cursor,
       sort: sortValue as AttentionSortMode | undefined,
       limit,
