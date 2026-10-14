@@ -136,11 +136,10 @@ function createStorageService(): StorageService {
   } as unknown as StorageService;
 }
 
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+let issueRoutes: typeof import("../routes/issues.js").issueRoutes;
+
 async function createApp(options?: { companyIds?: string[] }) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -210,13 +209,19 @@ function makeDocument(overrides: Record<string, unknown> = {}) {
 }
 
 describe("work product review-document route", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
     registerRouteMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockWorkProductService.getById.mockResolvedValue(makeWorkProduct());
-  });
+    // Cold route transformation belongs to setup, not the HTTP assertion's
+    // default five-second deadline. Keep fresh modules and mocks per case.
+    [{ errorHandler }, { issueRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+  }, 15_000);
 
   it("returns 404 when the work product belongs to another issue", async () => {
     mockWorkProductService.getById.mockResolvedValue(
